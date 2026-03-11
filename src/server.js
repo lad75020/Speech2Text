@@ -26,20 +26,17 @@ const httpServer = createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server: httpServer });
+const pendingJobs = [];
+let currentJob = null;
 
 wss.on("connection", (socket, request) => {
   console.log(`client connected from ${request.socket.remoteAddress ?? "unknown"}`);
 
-  let activeJob = null;
+  const socketJobs = new Set();
 
-  socket.on("message", async (raw, isBinary) => {
+  socket.on("message", (raw, isBinary) => {
     if (isBinary) {
       sendError(socket, "Binary WebSocket frames are not supported. Send JSON text messages.");
-      return;
-    }
-
-    if (activeJob) {
-      sendError(socket, "A transcription job is already running for this socket.");
       return;
     }
 
@@ -64,35 +61,41 @@ wss.on("connection", (socket, request) => {
 
     const jobId = typeof message.id === "string" && message.id ? message.id : randomUUID();
     const language = typeof message.language === "string" && message.language ? message.language : "auto";
-
-    activeJob = createJobTracker(jobId);
-    sendJson(socket, {
-      type: "start",
-      id: jobId,
-      model: MODEL_PATH,
+    const queuePosition = pendingJobs.length + (currentJob ? 1 : 0);
+    const job = {
+      socket,
+      socketJobs,
+      jobId,
+      audioBase64,
       language,
-    });
+      tracker: createJobTracker(jobId),
+    };
 
-    try {
-      await transcribeAudio({ socket, jobId, audioBase64, language, tracker: activeJob });
-    } catch (error) {
-      if (!activeJob.cancelled) {
-        sendJson(socket, {
-          type: "error",
-          id: jobId,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    } finally {
-      activeJob = null;
+    socketJobs.add(job);
+    pendingJobs.push(job);
+
+    if (queuePosition > 0) {
+      sendJson(socket, {
+        type: "queued",
+        id: jobId,
+        position: queuePosition,
+      });
     }
+
+    void processQueue();
   });
 
   socket.on("close", () => {
-    if (activeJob) {
-      activeJob.cancelled = true;
-      activeJob.ffmpeg?.kill("SIGTERM");
-      activeJob.whisper?.kill("SIGTERM");
+    for (const job of socketJobs) {
+      job.tracker.cancelled = true;
+
+      if (currentJob === job) {
+        job.tracker.ffmpeg?.kill("SIGTERM");
+        job.tracker.whisper?.kill("SIGTERM");
+        continue;
+      }
+
+      removePendingJob(job);
     }
 
     console.log("client disconnected");
@@ -114,6 +117,43 @@ function createJobTracker(jobId) {
     tail: "",
     emittedLength: 0,
   };
+}
+
+async function processQueue() {
+  if (currentJob || pendingJobs.length === 0) {
+    return;
+  }
+
+  currentJob = pendingJobs.shift();
+  const { socket, jobId, language, tracker } = currentJob;
+
+  sendJson(socket, {
+    type: "start",
+    id: jobId,
+    model: MODEL_PATH,
+    language,
+  });
+
+  try {
+    await transcribeAudio(currentJob);
+  } catch (error) {
+    if (!tracker.cancelled) {
+      sendJson(socket, {
+        type: "error",
+        id: jobId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  } finally {
+    currentJob.socketJobs.delete(currentJob);
+    currentJob = null;
+
+    if (pendingJobs.length > 0) {
+      setImmediate(() => {
+        void processQueue();
+      });
+    }
+  }
 }
 
 async function transcribeAudio({ socket, jobId, audioBase64, language, tracker }) {
@@ -155,6 +195,13 @@ function decodeBase64Audio(audioBase64) {
     return Buffer.from(normalized, "base64");
   } catch {
     throw new Error("Audio payload is not valid base64.");
+  }
+}
+
+function removePendingJob(job) {
+  const index = pendingJobs.indexOf(job);
+  if (index >= 0) {
+    pendingJobs.splice(index, 1);
   }
 }
 

@@ -63,12 +63,13 @@ The `audio` field may also be a data URL such as `data:audio/webm;base64,...`.
 
 Server responses:
 
+- `{"type":"queued","id":"...","position":1}`
 - `{"type":"start","id":"...","model":"...","language":"auto"}`
 - `{"type":"delta","id":"...","text":"new fragment","fullText":"full transcript so far"}`
 - `{"type":"done","id":"...","text":"final transcript"}`
 - `{"type":"error","id":"...","message":"..."}`
 
-One transcription job runs at a time per socket.
+Transcription jobs are processed through a single global queue, one at a time.
 
 ## Notes
 
