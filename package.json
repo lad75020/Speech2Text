@@ -1,0 +1,16 @@
+{
+  "name": "speech2text-websocket-backend",
+  "version": "1.0.0",
+  "description": "WebSocket backend for base64 webm/opus transcription via whisper.cpp",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
