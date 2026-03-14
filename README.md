@@ -21,11 +21,18 @@ npm install
 npm start
 ```
 
-Optional environment variables:
+Host and port can come from `.env` or from environment variables. Environment variables win if both are set.
 
-- `HOST` default: `0.0.0.0`
-- `PORT` default: `8080`
+- `LDU_WHISPER_HOST` default: `0.0.0.0`
+- `LDU_WHISPER_PORT` default: `8080`
 - `WHISPER_MODEL` default: `./models/ggml-small.bin`
+
+Example `.env`:
+
+```bash
+LDU_WHISPER_HOST=0.0.0.0
+LDU_WHISPER_PORT=8080
+```
 
 ## launchd
 

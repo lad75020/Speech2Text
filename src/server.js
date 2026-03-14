@@ -1,14 +1,16 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
 import { WebSocket, WebSocketServer } from "ws";
 
-const HOST = process.env.HOST ?? "0.0.0.0";
-const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
+const PROJECT_ROOT = process.cwd();
+const dotEnv = await loadDotEnvFile(path.join(PROJECT_ROOT, ".env"));
+const HOST = process.env.LDU_WHISPER_HOST ?? dotEnv.LDU_WHISPER_HOST ?? "0.0.0.0";
+const PORT = parsePort(process.env.LDU_WHISPER_PORT ?? dotEnv.LDU_WHISPER_PORT ?? "8080");
 const MODEL_PATH = path.resolve(process.cwd(), process.env.WHISPER_MODEL ?? "./models/ggml-small.bin");
 const TEMP_ROOT = path.join(os.tmpdir(), "speech2text-websocket");
 
@@ -117,6 +119,63 @@ function createJobTracker(jobId) {
     tail: "",
     emittedLength: 0,
   };
+}
+
+async function loadDotEnvFile(filePath) {
+  try {
+    const content = await readFile(filePath, "utf8");
+    return parseDotEnv(content);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return {};
+    }
+
+    throw error;
+  }
+}
+
+function parseDotEnv(content) {
+  const env = {};
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const normalizedLine = line.startsWith("export ") ? line.slice(7) : line;
+    const separatorIndex = normalizedLine.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = normalizedLine.slice(0, separatorIndex).trim();
+    const value = normalizedLine.slice(separatorIndex + 1).trim();
+    env[key] = stripWrappingQuotes(value);
+  }
+
+  return env;
+}
+
+function stripWrappingQuotes(value) {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+
+  return value;
+}
+
+function parsePort(value) {
+  const port = Number.parseInt(value, 10);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid LDU_WHISPER_PORT value: ${value}`);
+  }
+
+  return port;
 }
 
 async function processQueue() {

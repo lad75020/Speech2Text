@@ -3,3 +3,4 @@ node_modules/
 models/ggml-small.bin
 /launchd
 .DS_Store
+.env
