@@ -1,7 +1,7 @@
 {
   "name": "speech2text-websocket-backend",
   "version": "1.0.0",
-  "description": "WebSocket backend for base64 webm/opus transcription via whisper.cpp",
+  "description": "WebSocket and MCP transcription backend for base64 webm/opus audio via whisper.cpp",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
@@ -11,6 +11,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "ws": "^8.18.3"
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "ws": "^8.18.3",
+    "zod": "^4.3.6"
   }
 }

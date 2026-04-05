@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speech2Text WebSocket Test</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4efe7;
+        --panel: rgba(255, 252, 247, 0.88);
+        --panel-strong: #fffaf2;
+        --text: #182020;
+        --muted: #5c6666;
+        --accent: #0f766e;
+        --accent-strong: #115e59;
+        --danger: #b42318;
+        --border: rgba(24, 32, 32, 0.12);
+        --shadow: 0 18px 48px rgba(52, 61, 61, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(15, 118, 110, 0.14), transparent 32%),
+          radial-gradient(circle at top right, rgba(180, 35, 24, 0.08), transparent 24%),
+          linear-gradient(180deg, #fbf6ef 0%, var(--bg) 55%, #ece5da 100%);
+      }
+
+      main {
+        width: min(1100px, calc(100% - 32px));
+        margin: 32px auto;
+        display: grid;
+        gap: 20px;
+      }
+
+      .hero,
+      .panel {
+        background: var(--panel);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+      }
+
+      .hero {
+        padding: 28px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: clamp(2rem, 4vw, 3.4rem);
+        line-height: 0.96;
+        letter-spacing: -0.05em;
+        max-width: 12ch;
+      }
+
+      .hero p {
+        margin-top: 16px;
+        max-width: 60ch;
+        color: var(--muted);
+        font-size: 1rem;
+        line-height: 1.5;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+      }
+
+      .panel {
+        padding: 22px;
+      }
+
+      .panel h2 {
+        font-size: 0.95rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .stack {
+        display: grid;
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        font-size: 0.92rem;
+        color: var(--muted);
+      }
+
+      input,
+      select,
+      button,
+      textarea {
+        font: inherit;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px 14px;
+        background: var(--panel-strong);
+        color: var(--text);
+      }
+
+      textarea {
+        min-height: 190px;
+        resize: vertical;
+      }
+
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 11px 16px;
+        cursor: pointer;
+        transition: transform 120ms ease, opacity 120ms ease, background 120ms ease;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+
+      .primary {
+        background: var(--accent);
+        color: white;
+      }
+
+      .secondary {
+        background: #d9ebe8;
+        color: var(--accent-strong);
+      }
+
+      .danger {
+        background: #f9dbd8;
+        color: var(--danger);
+      }
+
+      .status-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        font-size: 0.94rem;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: #e7ece8;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #7b8a8a;
+      }
+
+      .dot.live {
+        background: var(--accent);
+      }
+
+      .dot.busy {
+        background: #f59e0b;
+      }
+
+      .dot.error {
+        background: var(--danger);
+      }
+
+      pre {
+        margin: 0;
+        min-height: 260px;
+        max-height: 420px;
+        overflow: auto;
+        border-radius: 18px;
+        padding: 16px;
+        background: #101817;
+        color: #ddedea;
+        font-family: "SFMono-Regular", "Menlo", monospace;
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+
+      audio {
+        width: 100%;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+
+      @media (max-width: 860px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        main {
+          width: min(100% - 20px, 1100px);
+          margin: 10px auto 24px;
+        }
+
+        .hero,
+        .panel {
+          border-radius: 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <h1>Speech2Text WebSocket Test</h1>
+        <p>
+          This page records microphone audio with the browser, sends it as a
+          single <code>transcribe</code> request over WebSocket, and streams
+          queue, start, delta, done, and error events from the backend.
+        </p>
+      </section>
+
+      <section class="grid">
+        <section class="panel">
+          <h2>Session</h2>
+          <div class="stack">
+            <label>
+              WebSocket URL
+              <input id="ws-url" value="wss://whisper.dubertrand.fr" />
+            </label>
+
+            <label>
+              Language
+              <select id="language">
+                <option value="auto" selected>auto</option>
+                <option value="en">en</option>
+                <option value="fr">fr</option>
+                <option value="es">es</option>
+                <option value="de">de</option>
+                <option value="it">it</option>
+              </select>
+            </label>
+
+            <div class="status-line">
+              <span class="pill"><span id="socket-dot" class="dot"></span><span id="socket-state">Disconnected</span></span>
+              <span class="pill"><span id="recording-dot" class="dot"></span><span id="recording-state">Idle</span></span>
+            </div>
+
+            <div class="button-row">
+              <button id="connect-button" class="primary">Connect</button>
+              <button id="disconnect-button" class="secondary" disabled>Disconnect</button>
+              <button id="record-button" class="primary" disabled>Start Recording</button>
+              <button id="stop-button" class="danger" disabled>Stop Recording</button>
+            </div>
+
+            <audio id="playback" controls></audio>
+            <p class="hint">
+              Use this from a secure origin such as <code>https://</code> or
+              <code>http://localhost</code> so the browser allows microphone access.
+            </p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Transcript</h2>
+          <div class="stack">
+            <label>
+              Live transcript
+              <textarea id="transcript" readonly placeholder="Transcript events will appear here."></textarea>
+            </label>
+            <label>
+              Last request id
+              <input id="request-id" readonly placeholder="Not sent yet" />
+            </label>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <h2>Event Log</h2>
+        <div class="stack">
+          <pre id="event-log"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const wsUrlInput = document.getElementById("ws-url");
+      const languageSelect = document.getElementById("language");
+      const connectButton = document.getElementById("connect-button");
+      const disconnectButton = document.getElementById("disconnect-button");
+      const recordButton = document.getElementById("record-button");
+      const stopButton = document.getElementById("stop-button");
+      const socketDot = document.getElementById("socket-dot");
+      const socketState = document.getElementById("socket-state");
+      const recordingDot = document.getElementById("recording-dot");
+      const recordingState = document.getElementById("recording-state");
+      const transcriptField = document.getElementById("transcript");
+      const requestIdField = document.getElementById("request-id");
+      const eventLog = document.getElementById("event-log");
+      const playback = document.getElementById("playback");
+
+      let socket = null;
+      let mediaRecorder = null;
+      let mediaStream = null;
+      let audioChunks = [];
+      let lastTranscript = "";
+
+      connectButton.addEventListener("click", connectSocket);
+      disconnectButton.addEventListener("click", disconnectSocket);
+      recordButton.addEventListener("click", startRecording);
+      stopButton.addEventListener("click", stopRecording);
+
+      logEvent("ready", { url: wsUrlInput.value });
+      updateSocketState("Disconnected");
+      updateRecordingState("Idle");
+
+      function connectSocket() {
+        if (socket && socket.readyState <= WebSocket.OPEN) {
+          return;
+        }
+
+        const url = wsUrlInput.value.trim();
+        if (!url) {
+          logEvent("client-error", { message: "WebSocket URL is required." });
+          return;
+        }
+
+        try {
+          socket = new WebSocket(url);
+        } catch (error) {
+          logEvent("client-error", { message: error.message });
+          updateSocketState("Error", "error");
+          return;
+        }
+
+        updateSocketState("Connecting", "busy");
+        connectButton.disabled = true;
+
+        socket.addEventListener("open", () => {
+          logEvent("socket-open", { url });
+          updateSocketState("Connected", "live");
+          connectButton.disabled = true;
+          disconnectButton.disabled = false;
+          recordButton.disabled = false;
+        });
+
+        socket.addEventListener("close", (event) => {
+          logEvent("socket-close", { code: event.code, reason: event.reason || "" });
+          resetSocket();
+          updateSocketState("Disconnected");
+        });
+
+        socket.addEventListener("error", () => {
+          logEvent("socket-error", { message: "WebSocket transport error." });
+          updateSocketState("Error", "error");
+        });
+
+        socket.addEventListener("message", (event) => {
+          handleServerMessage(event.data);
+        });
+      }
+
+      function disconnectSocket() {
+        if (!socket) {
+          return;
+        }
+
+        socket.close(1000, "client disconnect");
+      }
+
+      async function startRecording() {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          logEvent("client-error", { message: "Connect the WebSocket before recording." });
+          return;
+        }
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+          logEvent("client-error", { message: "getUserMedia is not available in this browser." });
+          return;
+        }
+
+        const mimeType = pickMimeType();
+        if (!mimeType) {
+          logEvent("client-error", { message: "This browser does not support webm/opus recording." });
+          return;
+        }
+
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioChunks = [];
+          lastTranscript = "";
+          transcriptField.value = "";
+          playback.removeAttribute("src");
+          requestIdField.value = "";
+
+          mediaRecorder = new MediaRecorder(mediaStream, { mimeType });
+          mediaRecorder.addEventListener("dataavailable", (event) => {
+            if (event.data && event.data.size > 0) {
+              audioChunks.push(event.data);
+            }
+          });
+          mediaRecorder.addEventListener("stop", sendRecording);
+          mediaRecorder.start();
+
+          logEvent("recording-start", { mimeType });
+          updateRecordingState("Recording", "live");
+          recordButton.disabled = true;
+          stopButton.disabled = false;
+          disconnectButton.disabled = true;
+        } catch (error) {
+          logEvent("client-error", { message: error.message });
+          cleanupMedia();
+          updateRecordingState("Idle");
+        }
+      }
+
+      function stopRecording() {
+        if (!mediaRecorder || mediaRecorder.state === "inactive") {
+          return;
+        }
+
+        mediaRecorder.stop();
+        updateRecordingState("Encoding", "busy");
+        stopButton.disabled = true;
+      }
+
+      async function sendRecording() {
+        try {
+          const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+          const requestId = crypto.randomUUID();
+          requestIdField.value = requestId;
+          playback.src = URL.createObjectURL(blob);
+
+          const audioBase64 = await blobToBase64(blob);
+          const payload = {
+            type: "transcribe",
+            id: requestId,
+            language: languageSelect.value,
+            audio: audioBase64,
+          };
+
+          socket.send(JSON.stringify(payload));
+          logEvent("request-sent", {
+            id: requestId,
+            bytes: blob.size,
+            mimeType: blob.type,
+            language: payload.language,
+          });
+          updateRecordingState("Awaiting result", "busy");
+        } catch (error) {
+          logEvent("client-error", { message: error.message });
+          updateRecordingState("Idle");
+        } finally {
+          cleanupMedia();
+          disconnectButton.disabled = false;
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            recordButton.disabled = false;
+          }
+        }
+      }
+
+      function handleServerMessage(rawData) {
+        let message;
+        try {
+          message = JSON.parse(rawData);
+        } catch (error) {
+          logEvent("parse-error", { rawData, message: error.message });
+          return;
+        }
+
+        logEvent(message.type || "message", message);
+
+        if (message.type === "delta") {
+          lastTranscript = message.fullText || lastTranscript + (message.text || "");
+          transcriptField.value = lastTranscript;
+        } else if (message.type === "done") {
+          lastTranscript = message.text || lastTranscript;
+          transcriptField.value = lastTranscript;
+          updateRecordingState("Idle");
+        } else if (message.type === "error") {
+          updateRecordingState("Error", "error");
+        } else if (message.type === "start") {
+          transcriptField.value = "";
+          lastTranscript = "";
+          updateRecordingState("Transcribing", "busy");
+        }
+      }
+
+      function updateSocketState(label, tone = "") {
+        socketState.textContent = label;
+        socketDot.className = `dot ${tone}`.trim();
+        const connected = label === "Connected";
+        connectButton.disabled = connected || label === "Connecting";
+        disconnectButton.disabled = !connected;
+        if (!connected) {
+          recordButton.disabled = true;
+          stopButton.disabled = true;
+        }
+      }
+
+      function updateRecordingState(label, tone = "") {
+        recordingState.textContent = label;
+        recordingDot.className = `dot ${tone}`.trim();
+      }
+
+      function resetSocket() {
+        socket = null;
+        connectButton.disabled = false;
+        disconnectButton.disabled = true;
+        recordButton.disabled = true;
+        stopButton.disabled = true;
+      }
+
+      function cleanupMedia() {
+        if (mediaStream) {
+          for (const track of mediaStream.getTracks()) {
+            track.stop();
+          }
+        }
+
+        mediaRecorder = null;
+        mediaStream = null;
+        audioChunks = [];
+      }
+
+      function pickMimeType() {
+        const candidates = [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+        ];
+
+        return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || "";
+      }
+
+      function blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error("Failed to encode audio blob."));
+          reader.onloadend = () => {
+            const dataUrl = String(reader.result || "");
+            const comma = dataUrl.indexOf(",");
+            resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+          };
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      function logEvent(type, payload) {
+        const timestamp = new Date().toISOString();
+        const line = `[${timestamp}] ${type}\n${JSON.stringify(payload, null, 2)}\n\n`;
+        eventLog.textContent = line + eventLog.textContent;
+      }
+    </script>
+  </body>
+</html>

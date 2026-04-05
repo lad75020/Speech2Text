@@ -4,3 +4,13 @@ models/ggml-small.bin
 /launchd
 .DS_Store
 .env
+src/mcpo
+models/ggml-medium-encoder.mlmodelc/weights/weight.bin
+models/ggml-medium-encoder.mlmodelc/analytics/coremldata.bin
+models/ggml-medium-encoder.mlmodelc/coremldata.bin
+.gitignore
+.gitignore
+.gitignore
+models/ggml-medium.bin
+models/ggml-medium-encoder.mlmodelc/model.mil
+models/ggml-medium-encoder.mlmodelc/metadata.json

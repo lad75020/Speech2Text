@@ -1,6 +1,11 @@
 # Speech2Text WebSocket Backend
 
-Minimal Node.js WebSocket server that accepts `webm/opus` audio as base64, converts it to mono 16 kHz WAV with `ffmpeg`, runs `whisper-cli`, and streams transcript text back over the same socket.
+Minimal Node.js transcription service that exposes:
+
+- a WebSocket API for streaming transcript updates
+- a stateless HTTP MCP endpoint for agent tool calls returning only the final transcript
+
+Both transports accept `webm/opus` audio as base64, convert it to mono 16 kHz WAV with `ffmpeg`, and run `whisper-cli`.
 
 ## Requirements
 
@@ -51,6 +56,13 @@ tail -f /Users/laurent/Library/Logs/Speech2Text/launchd.stdout.log
 tail -f /Users/laurent/Library/Logs/Speech2Text/launchd.stderr.log
 ```
 
+## Browser Test Page
+
+A standalone WebSocket test client is available at `test/websocket-test.html`.
+
+- Default backend URL: `wss://whisper.dubertrand.fr`
+- Open it from a secure origin such as `https://...` or `http://localhost/...` so the browser allows microphone access.
+
 ## WebSocket protocol
 
 Connect to `ws://<server>:8080`.
@@ -77,6 +89,33 @@ Server responses:
 - `{"type":"error","id":"...","message":"..."}`
 
 Transcription jobs are processed through a single global queue, one at a time.
+
+## MCP protocol
+
+Connect MCP clients to `http://<server>:8080/mcp` using Streamable HTTP.
+
+The server exposes one MCP tool:
+
+- `transcribe`
+
+Tool input schema:
+
+```json
+{
+  "type": "transcribe",
+  "id": "optional-request-id",
+  "language": "auto",
+  "audio": "BASE64_WEBM_OPUS"
+}
+```
+
+The `audio` field may also be a data URL such as `data:audio/webm;base64,...`.
+
+Tool result:
+
+- a single text response containing the final transcript only
+
+This MCP endpoint is stateless and shares the same single global transcription queue as the WebSocket API.
 
 ## Notes
 

@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { WebSocket, WebSocketServer } from "ws";
+import * as z from "zod/v4";
 
 const PROJECT_ROOT = process.cwd();
 const dotEnv = await loadDotEnvFile(path.join(PROJECT_ROOT, ".env"));
@@ -16,20 +19,14 @@ const TEMP_ROOT = path.join(os.tmpdir(), "speech2text-websocket");
 
 await mkdir(TEMP_ROOT, { recursive: true });
 
-const httpServer = createServer((req, res) => {
-  if (req.url === "/healthz") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
+const pendingJobs = [];
+let currentJob = null;
 
-  res.writeHead(404, { "content-type": "application/json" });
-  res.end(JSON.stringify({ error: "Not found" }));
+const httpServer = createServer((req, res) => {
+  void handleHttpRequest(req, res);
 });
 
 const wss = new WebSocketServer({ server: httpServer });
-const pendingJobs = [];
-let currentJob = null;
 
 wss.on("connection", (socket, request) => {
   console.log(`client connected from ${request.socket.remoteAddress ?? "unknown"}`);
@@ -61,43 +58,60 @@ wss.on("connection", (socket, request) => {
       return;
     }
 
-    const jobId = typeof message.id === "string" && message.id ? message.id : randomUUID();
-    const language = typeof message.language === "string" && message.language ? message.language : "auto";
-    const queuePosition = pendingJobs.length + (currentJob ? 1 : 0);
-    const job = {
-      socket,
-      socketJobs,
-      jobId,
+    let job;
+    job = createTranscriptionJob({
+      jobId: resolveJobId(message.id),
       audioBase64,
-      language,
-      tracker: createJobTracker(jobId),
-    };
+      language: resolveLanguage(message.language),
+      onQueued(position) {
+        sendJson(socket, {
+          type: "queued",
+          id: job.jobId,
+          position,
+        });
+      },
+      onStart({ id, model, language }) {
+        sendJson(socket, {
+          type: "start",
+          id,
+          model,
+          language,
+        });
+      },
+      onDelta({ id, text, fullText }) {
+        sendJson(socket, {
+          type: "delta",
+          id,
+          text,
+          fullText,
+        });
+      },
+      onDone(text) {
+        sendJson(socket, {
+          type: "done",
+          id: job.jobId,
+          text,
+        });
+      },
+      onError(message) {
+        sendJson(socket, {
+          type: "error",
+          id: job.jobId,
+          message,
+        });
+      },
+      onFinally() {
+        socketJobs.delete(job);
+      },
+    });
 
     socketJobs.add(job);
-    pendingJobs.push(job);
-
-    if (queuePosition > 0) {
-      sendJson(socket, {
-        type: "queued",
-        id: jobId,
-        position: queuePosition,
-      });
-    }
-
-    void processQueue();
+    enqueueTranscriptionJob(job);
   });
 
   socket.on("close", () => {
     for (const job of socketJobs) {
-      job.tracker.cancelled = true;
-
-      if (currentJob === job) {
-        job.tracker.ffmpeg?.kill("SIGTERM");
-        job.tracker.whisper?.kill("SIGTERM");
-        continue;
-      }
-
-      removePendingJob(job);
+      cancelJob(job);
     }
 
     console.log("client disconnected");
@@ -105,9 +119,231 @@ wss.on("connection", (socket, request) => {
 });
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`speech2text websocket backend listening on ws://${HOST}:${PORT}`);
+  console.log(`speech2text backend listening on http://${HOST}:${PORT}`);
+  console.log(`websocket endpoint available at ws://${HOST}:${PORT}`);
+  console.log(`MCP endpoint available at https://${HOST}:${PORT}/mcp`);
   console.log(`using whisper model at ${MODEL_PATH}`);
 });
+
+async function handleHttpRequest(req, res) {
+  try {
+    const requestUrl = new URL(req.url ?? "/", `https://${req.headers.host ?? "localhost"}`);
+
+    if (requestUrl.pathname === "/healthz") {
+      sendJsonResponse(res, 200, { ok: true });
+      return;
+    }
+
+    if (requestUrl.pathname === "/mcp") {
+      await handleMcpHttpRequest(req, res);
+      return;
+    }
+
+    sendJsonResponse(res, 404, { error: "Not found" });
+  } catch (error) {
+    console.error("HTTP request failed:", error);
+
+    if (!res.headersSent) {
+      sendJsonResponse(res, 500, { error: "Internal server error" });
+    }
+  }
+}
+
+async function handleMcpHttpRequest(req, res) {
+  if (req.method !== "POST") {
+    res.writeHead(405, { Allow: "POST", "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Method not allowed.",
+        },
+        id: null,
+      })
+    );
+    return;
+  }
+
+  let parsedBody;
+  try {
+    parsedBody = await readJsonBody(req);
+  } catch (error) {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32700,
+          message: error instanceof Error ? error.message : "Invalid JSON payload.",
+        },
+        id: null,
+      })
+    );
+    return;
+  }
+
+  const mcpServer = buildMcpServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+
+  const cleanup = () => {
+    void transport.close().catch((error) => {
+      console.error("Failed to close MCP transport:", error);
+    });
+    void mcpServer.close().catch((error) => {
+      console.error("Failed to close MCP server:", error);
+    });
+  };
+
+  res.once("close", cleanup);
+
+  try {
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
+  } catch (error) {
+    console.error("Error handling MCP request:", error);
+
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: {
+            code: -32603,
+            message: "Internal server error",
+          },
+          id: null,
+        })
+      );
+    }
+  }
+}
+
+function buildMcpServer() {
+  const server = new McpServer(
+    {
+      name: "speech2text-http-mcp",
+      version: "1.1.0",
+    },
+    {
+      capabilities: {
+        logging: {},
+      },
+    }
+  );
+
+  server.registerTool(
+    "transcribe",
+    {
+      description:
+        "Transcribe a base64-encoded webm/opus audio payload using whisper.cpp and return the final transcript text.",
+      inputSchema: {
+        type: z.literal("transcribe").describe("Must be 'transcribe'."),
+        id: z.string().optional().describe("Optional request identifier."),
+        language: z.string().default("auto").describe("Whisper language code, or 'auto'."),
+        audio: z
+          .string()
+          .min(1)
+          .describe("Base64 webm/opus audio payload or a data URL such as data:audio/webm;base64,..."),
+      },
+    },
+    async ({ id, language, audio }) => {
+      const transcript = await transcribeAudioOnce({
+        jobId: resolveJobId(id),
+        language,
+        audioBase64: audio,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: transcript,
+          },
+        ],
+      };
+    }
+  );
+
+  return server;
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+
+  const rawBody = Buffer.concat(chunks).toString("utf8").trim();
+  if (!rawBody) {
+    throw new Error("Missing JSON request body.");
+  }
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    throw new Error("Invalid JSON payload.");
+  }
+}
+
+function sendJsonResponse(res, statusCode, payload) {
+  res.writeHead(statusCode, { "content-type": "application/json" });
+  res.end(JSON.stringify(payload));
+}
+
+function createTranscriptionJob({
+  jobId,
+  audioBase64,
+  language = "auto",
+  onQueued,
+  onStart,
+  onDelta,
+  onDone,
+  onError,
+  onFinally,
+}) {
+  return {
+    jobId,
+    audioBase64,
+    language,
+    tracker: createJobTracker(jobId),
+    onQueued,
+    onStart,
+    onDelta,
+    onDone,
+    onError,
+    onFinally,
+  };
+}
+
+function enqueueTranscriptionJob(job) {
+  const queuePosition = pendingJobs.length + (currentJob ? 1 : 0);
+
+  pendingJobs.push(job);
+
+  if (queuePosition > 0) {
+    job.onQueued?.(queuePosition);
+  }
+
+  void processQueue();
+
+  return job;
+}
+
+function cancelJob(job) {
+  job.tracker.cancelled = true;
+
+  if (currentJob === job) {
+    job.tracker.ffmpeg?.kill("SIGTERM");
+    job.tracker.whisper?.kill("SIGTERM");
+  } else {
+    removePendingJob(job);
+    job.onFinally?.();
+  }
+}
 
 function createJobTracker(jobId) {
   return {
@@ -119,6 +355,24 @@ function createJobTracker(jobId) {
     tail: "",
     emittedLength: 0,
   };
+}
+
+async function transcribeAudioOnce({ jobId, audioBase64, language = "auto" }) {
+  return await new Promise((resolve, reject) => {
+    enqueueTranscriptionJob(
+      createTranscriptionJob({
+        jobId,
+        audioBase64,
+        language,
+        onDone(text) {
+          resolve(text);
+        },
+        onError(message) {
+          reject(new Error(message));
+        },
+      })
+    );
+  });
 }
 
 async function loadDotEnvFile(filePath) {
@@ -178,33 +432,40 @@ function parsePort(value) {
   return port;
 }
 
+function resolveJobId(value) {
+  return typeof value === "string" && value ? value : randomUUID();
+}
+
+function resolveLanguage(value) {
+  return typeof value === "string" && value ? value : "auto";
+}
+
 async function processQueue() {
   if (currentJob || pendingJobs.length === 0) {
     return;
   }
 
   currentJob = pendingJobs.shift();
-  const { socket, jobId, language, tracker } = currentJob;
+  const job = currentJob;
 
-  sendJson(socket, {
-    type: "start",
-    id: jobId,
+  job.onStart?.({
+    id: job.jobId,
     model: MODEL_PATH,
-    language,
+    language: job.language,
   });
 
   try {
-    await transcribeAudio(currentJob);
+    const transcript = await transcribeAudio(job);
+
+    if (!job.tracker.cancelled) {
+      job.onDone?.(transcript);
+    }
   } catch (error) {
-    if (!tracker.cancelled) {
-      sendJson(socket, {
-        type: "error",
-        id: jobId,
-        message: error instanceof Error ? error.message : String(error),
-      });
+    if (!job.tracker.cancelled) {
+      job.onError?.(error instanceof Error ? error.message : String(error));
     }
   } finally {
-    currentJob.socketJobs.delete(currentJob);
+    job.onFinally?.();
     currentJob = null;
 
     if (pendingJobs.length > 0) {
@@ -215,7 +476,8 @@ async function processQueue() {
   }
 }
 
-async function transcribeAudio({ socket, jobId, audioBase64, language, tracker }) {
+async function transcribeAudio(job) {
+  const { jobId, audioBase64, language, tracker } = job;
   const jobDir = path.join(TEMP_ROOT, jobId);
   const inputPath = path.join(jobDir, "input.webm");
   const wavPath = path.join(jobDir, "input.wav");
@@ -228,18 +490,11 @@ async function transcribeAudio({ socket, jobId, audioBase64, language, tracker }
 
     await convertWebmToWav({ inputPath, wavPath, tracker });
     if (tracker.cancelled) {
-      return;
+      return tracker.transcript.trim();
     }
 
-    await runWhisper({ socket, jobId, wavPath, language, tracker });
-
-    if (!tracker.cancelled) {
-      sendJson(socket, {
-        type: "done",
-        id: jobId,
-        text: tracker.transcript.trim(),
-      });
-    }
+    await runWhisper({ job, wavPath, language, tracker });
+    return tracker.transcript.trim();
   } finally {
     await rm(jobDir, { recursive: true, force: true });
   }
@@ -308,7 +563,7 @@ function convertWebmToWav({ inputPath, wavPath, tracker }) {
   });
 }
 
-function runWhisper({ socket, jobId, wavPath, language, tracker }) {
+function runWhisper({ job, wavPath, language, tracker }) {
   return new Promise((resolve, reject) => {
     const whisper = spawn("whisper-cli", [
       "-m",
@@ -326,9 +581,8 @@ function runWhisper({ socket, jobId, wavPath, language, tracker }) {
     let stderr = "";
 
     whisper.stdout.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
-      tracker.tail += text;
-      flushTranscript(socket, jobId, tracker, false);
+      tracker.tail += chunk.toString("utf8");
+      flushTranscript(job, false);
     });
 
     whisper.stderr.on("data", (chunk) => {
@@ -341,7 +595,7 @@ function runWhisper({ socket, jobId, wavPath, language, tracker }) {
 
     whisper.on("close", (code) => {
       tracker.whisper = null;
-      flushTranscript(socket, jobId, tracker, true);
+      flushTranscript(job, true);
 
       if (tracker.cancelled) {
         resolve();
@@ -358,32 +612,33 @@ function runWhisper({ socket, jobId, wavPath, language, tracker }) {
   });
 }
 
-function flushTranscript(socket, jobId, tracker, isFinalFlush) {
-  const parsed = parseTranscript(tracker.tail, isFinalFlush);
-  tracker.tail = parsed.remainder;
+function flushTranscript(job, isFinalFlush) {
+  const parsed = parseTranscript(job.tracker.tail, isFinalFlush);
+  job.tracker.tail = parsed.remainder;
 
   if (!parsed.text) {
     return;
   }
 
   const separator =
-    tracker.transcript && !tracker.transcript.endsWith(" ") && !parsed.text.startsWith("'")
+    job.tracker.transcript &&
+    !job.tracker.transcript.endsWith(" ") &&
+    !parsed.text.startsWith("'")
       ? " "
       : "";
-  const nextTranscript = `${tracker.transcript}${separator}${parsed.text}`;
-  const delta = nextTranscript.slice(tracker.emittedLength);
-  tracker.transcript = nextTranscript;
-  tracker.emittedLength = nextTranscript.length;
+  const nextTranscript = `${job.tracker.transcript}${separator}${parsed.text}`;
+  const delta = nextTranscript.slice(job.tracker.emittedLength);
+  job.tracker.transcript = nextTranscript;
+  job.tracker.emittedLength = nextTranscript.length;
 
   if (!delta) {
     return;
   }
 
-  sendJson(socket, {
-    type: "delta",
-    id: jobId,
+  job.onDelta?.({
+    id: job.jobId,
     text: delta,
-    fullText: tracker.transcript.trimStart(),
+    fullText: job.tracker.transcript.trimStart(),
   });
 }
 
