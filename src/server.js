@@ -16,6 +16,7 @@ const HOST = process.env.LDU_WHISPER_HOST ?? dotEnv.LDU_WHISPER_HOST ?? "0.0.0.0
 const PORT = parsePort(process.env.LDU_WHISPER_PORT ?? dotEnv.LDU_WHISPER_PORT ?? "8080");
 const MODEL_PATH = path.resolve(process.cwd(), process.env.WHISPER_MODEL ?? "./models/ggml-small.bin");
 const TEMP_ROOT = path.join(os.tmpdir(), "speech2text-websocket");
+const TEST_PAGE_PATH = path.join(PROJECT_ROOT, "test", "websocket-test.html");
 
 await mkdir(TEMP_ROOT, { recursive: true });
 
@@ -54,7 +55,7 @@ wss.on("connection", (socket, request) => {
 
     const audioBase64 = typeof message.audio === "string" ? message.audio.trim() : "";
     if (!audioBase64) {
-      sendError(socket, "Missing 'audio' field containing a base64 webm/opus payload.");
+      sendError(socket, "Missing 'audio' field containing a base64 audio payload.");
       return;
     }
 
@@ -142,6 +143,11 @@ async function handleHttpRequest(req, res) {
       return;
     }
 
+    if (requestUrl.pathname === "/test") {
+      await handleTestPageRequest(req, res);
+      return;
+    }
+
     if (requestUrl.pathname === "/mcp") {
       await handleMcpHttpRequest(req, res);
       return;
@@ -155,6 +161,27 @@ async function handleHttpRequest(req, res) {
       sendJsonResponse(res, 500, { error: "Internal server error" });
     }
   }
+}
+
+async function handleTestPageRequest(req, res) {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { Allow: "GET, HEAD", "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Method not allowed." }));
+    return;
+  }
+
+  const html = await readFile(TEST_PAGE_PATH, "utf8");
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+
+  res.end(html);
 }
 
 async function handleMcpHttpRequest(req, res) {
@@ -246,7 +273,7 @@ function buildMcpServer() {
     "transcribe",
     {
       description:
-        "Transcribe a base64-encoded webm/opus audio payload using whisper.cpp and return the final transcript text.",
+        "Transcribe a base64-encoded audio payload in any ffmpeg-readable audio format using whisper.cpp and return the final transcript text.",
       inputSchema: {
         type: z.literal("transcribe").describe("Must be 'transcribe'."),
         id: z.string().optional().describe("Optional request identifier."),
@@ -254,7 +281,7 @@ function buildMcpServer() {
         audio: z
           .string()
           .min(1)
-          .describe("Base64 webm/opus audio payload or a data URL such as data:audio/webm;base64,..."),
+          .describe("Base64 audio payload in any ffmpeg-readable format, or a data URL such as data:audio/mpeg;base64,..."),
       },
     },
     async ({ id, language, audio }) => {
@@ -497,7 +524,7 @@ async function processQueue() {
 async function transcribeAudio(job) {
   const { jobId, audioBase64, language, tracker } = job;
   const jobDir = path.join(TEMP_ROOT, jobId);
-  const inputPath = path.join(jobDir, "input.webm");
+  const inputPath = path.join(jobDir, "input.audio");
   const wavPath = path.join(jobDir, "input.wav");
 
   await mkdir(jobDir, { recursive: true });
@@ -506,7 +533,7 @@ async function transcribeAudio(job) {
     const audioBuffer = decodeBase64Audio(audioBase64);
     await writeFile(inputPath, audioBuffer);
 
-    await convertWebmToWav({ inputPath, wavPath, tracker });
+    await convertAudioToWav({ inputPath, wavPath, tracker });
     if (tracker.cancelled) {
       return tracker.transcript.trim();
     }
@@ -537,7 +564,7 @@ function removePendingJob(job) {
   }
 }
 
-function convertWebmToWav({ inputPath, wavPath, tracker }) {
+function convertAudioToWav({ inputPath, wavPath, tracker }) {
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn("ffmpeg", [
       "-y",

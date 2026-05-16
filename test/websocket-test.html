@@ -91,6 +91,13 @@
         text-transform: uppercase;
       }
 
+      .panel-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
       .stack {
         display: grid;
         gap: 14px;
@@ -163,6 +170,25 @@
       .danger {
         background: #f9dbd8;
         color: var(--danger);
+      }
+
+      .icon-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--panel-strong);
+        color: var(--accent-strong);
+      }
+
+      .icon-button svg {
+        width: 18px;
+        height: 18px;
+        pointer-events: none;
       }
 
       .status-line {
@@ -247,8 +273,8 @@
       <section class="hero">
         <h1>Speech2Text WebSocket Test</h1>
         <p>
-          This page records microphone audio with the browser, sends it as a
-          single <code>transcribe</code> request over WebSocket, and streams
+          This page records microphone audio or accepts an audio file, sends it
+          as a single <code>transcribe</code> request over WebSocket, and streams
           queue, start, delta, done, and error events from the backend.
         </p>
       </section>
@@ -286,16 +312,36 @@
               <button id="stop-button" class="danger" disabled>Stop Recording</button>
             </div>
 
+            <label>
+              Audio or video file
+              <input id="audio-file" type="file" accept="audio/*,video/*,.wav,.mp3,.m4a,.aac,.ogg,.opus,.webm,.flac,.mp4,.mov,.m4v,.mkv,.avi" disabled />
+            </label>
+
+            <div class="button-row">
+              <button id="send-file-button" class="primary" disabled>Send Selected File</button>
+            </div>
+
             <audio id="playback" controls></audio>
             <p class="hint">
               Use this from a secure origin such as <code>https://</code> or
               <code>http://localhost</code> so the browser allows microphone access.
+              Selected audio or video files are sent as-is to the WebSocket
+              server, which writes the decoded bytes directly to its ffmpeg
+              input file. For video files, ffmpeg extracts the audio stream.
             </p>
           </div>
         </section>
 
         <section class="panel">
-          <h2>Transcript</h2>
+          <div class="panel-title-row">
+            <h2>Transcript</h2>
+            <button id="copy-transcript-button" class="icon-button" type="button" title="Copy transcript" aria-label="Copy transcript">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+          </div>
           <div class="stack">
             <label>
               Live transcript
@@ -324,11 +370,14 @@
       const disconnectButton = document.getElementById("disconnect-button");
       const recordButton = document.getElementById("record-button");
       const stopButton = document.getElementById("stop-button");
+      const audioFileInput = document.getElementById("audio-file");
+      const sendFileButton = document.getElementById("send-file-button");
       const socketDot = document.getElementById("socket-dot");
       const socketState = document.getElementById("socket-state");
       const recordingDot = document.getElementById("recording-dot");
       const recordingState = document.getElementById("recording-state");
       const transcriptField = document.getElementById("transcript");
+      const copyTranscriptButton = document.getElementById("copy-transcript-button");
       const requestIdField = document.getElementById("request-id");
       const eventLog = document.getElementById("event-log");
       const playback = document.getElementById("playback");
@@ -343,6 +392,9 @@
       disconnectButton.addEventListener("click", disconnectSocket);
       recordButton.addEventListener("click", startRecording);
       stopButton.addEventListener("click", stopRecording);
+      audioFileInput.addEventListener("change", updateFileControls);
+      sendFileButton.addEventListener("click", sendSelectedFile);
+      copyTranscriptButton.addEventListener("click", copyTranscript);
 
       logEvent("ready", { url: wsUrlInput.value });
       updateSocketState("Disconnected");
@@ -376,6 +428,8 @@
           connectButton.disabled = true;
           disconnectButton.disabled = false;
           recordButton.disabled = false;
+          audioFileInput.disabled = false;
+          updateFileControls();
         });
 
         socket.addEventListener("close", (event) => {
@@ -415,7 +469,7 @@
 
         const mimeType = pickMimeType();
         if (!mimeType) {
-          logEvent("client-error", { message: "This browser does not support webm/opus recording." });
+          logEvent("client-error", { message: "This browser does not support a compatible audio recording format." });
           return;
         }
 
@@ -441,6 +495,8 @@
           recordButton.disabled = true;
           stopButton.disabled = false;
           disconnectButton.disabled = true;
+          audioFileInput.disabled = true;
+          sendFileButton.disabled = true;
         } catch (error) {
           logEvent("client-error", { message: error.message });
           cleanupMedia();
@@ -461,26 +517,7 @@
       async function sendRecording() {
         try {
           const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
-          const requestId = crypto.randomUUID();
-          requestIdField.value = requestId;
-          playback.src = URL.createObjectURL(blob);
-
-          const audioBase64 = await blobToBase64(blob);
-          const payload = {
-            type: "transcribe",
-            id: requestId,
-            language: languageSelect.value,
-            audio: audioBase64,
-          };
-
-          socket.send(JSON.stringify(payload));
-          logEvent("request-sent", {
-            id: requestId,
-            bytes: blob.size,
-            mimeType: blob.type,
-            language: payload.language,
-          });
-          updateRecordingState("Awaiting result", "busy");
+          await sendAudioBlob(blob, { source: "microphone", fileName: "recording" });
         } catch (error) {
           logEvent("client-error", { message: error.message });
           updateRecordingState("Idle");
@@ -489,8 +526,70 @@
           disconnectButton.disabled = false;
           if (socket && socket.readyState === WebSocket.OPEN) {
             recordButton.disabled = false;
+            audioFileInput.disabled = false;
+            updateFileControls();
           }
         }
+      }
+
+      async function sendSelectedFile() {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          logEvent("client-error", { message: "Connect the WebSocket before sending a file." });
+          return;
+        }
+
+        const file = audioFileInput.files?.[0];
+        if (!file) {
+          logEvent("client-error", { message: "Pick an audio file first." });
+          return;
+        }
+
+        try {
+          recordButton.disabled = true;
+          sendFileButton.disabled = true;
+          audioFileInput.disabled = true;
+          disconnectButton.disabled = true;
+          updateRecordingState("Encoding file", "busy");
+
+          await sendAudioBlob(file, { source: "file", fileName: file.name });
+        } catch (error) {
+          logEvent("client-error", { message: error.message });
+          updateRecordingState("Idle");
+        } finally {
+          disconnectButton.disabled = false;
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            recordButton.disabled = false;
+            audioFileInput.disabled = false;
+            updateFileControls();
+          }
+        }
+      }
+
+      async function sendAudioBlob(blob, { source, fileName }) {
+        const requestId = crypto.randomUUID();
+        requestIdField.value = requestId;
+        lastTranscript = "";
+        transcriptField.value = "";
+        playback.src = URL.createObjectURL(blob);
+
+        const audioBase64 = await blobToBase64(blob);
+        const payload = {
+          type: "transcribe",
+          id: requestId,
+          language: languageSelect.value,
+          audio: audioBase64,
+        };
+
+        socket.send(JSON.stringify(payload));
+        logEvent("request-sent", {
+          id: requestId,
+          source,
+          fileName,
+          bytes: blob.size,
+          mimeType: blob.type || "application/octet-stream",
+          language: payload.language,
+        });
+        updateRecordingState("Awaiting result", "busy");
       }
 
       function handleServerMessage(rawData) {
@@ -529,7 +628,14 @@
         if (!connected) {
           recordButton.disabled = true;
           stopButton.disabled = true;
+          audioFileInput.disabled = true;
+          sendFileButton.disabled = true;
         }
+      }
+
+      function updateFileControls() {
+        const connected = socket && socket.readyState === WebSocket.OPEN;
+        sendFileButton.disabled = !connected || audioFileInput.disabled || !audioFileInput.files?.length;
       }
 
       function updateRecordingState(label, tone = "") {
@@ -543,6 +649,8 @@
         disconnectButton.disabled = true;
         recordButton.disabled = true;
         stopButton.disabled = true;
+        audioFileInput.disabled = true;
+        sendFileButton.disabled = true;
       }
 
       function cleanupMedia() {
@@ -561,6 +669,10 @@
         const candidates = [
           "audio/webm;codecs=opus",
           "audio/webm",
+          "audio/ogg;codecs=opus",
+          "audio/ogg",
+          "audio/mp4",
+          "audio/aac",
         ];
 
         return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || "";
@@ -577,6 +689,35 @@
           };
           reader.readAsDataURL(blob);
         });
+      }
+
+      async function copyTranscript() {
+        const text = transcriptField.value;
+        if (!text) {
+          logEvent("client-info", { message: "No transcript to copy." });
+          return;
+        }
+
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            transcriptField.focus();
+            transcriptField.select();
+            document.execCommand("copy");
+            transcriptField.setSelectionRange(text.length, text.length);
+          }
+
+          copyTranscriptButton.title = "Copied";
+          copyTranscriptButton.setAttribute("aria-label", "Copied transcript");
+          logEvent("client-info", { message: "Transcript copied to clipboard." });
+          window.setTimeout(() => {
+            copyTranscriptButton.title = "Copy transcript";
+            copyTranscriptButton.setAttribute("aria-label", "Copy transcript");
+          }, 1200);
+        } catch (error) {
+          logEvent("client-error", { message: `Failed to copy transcript: ${error.message}` });
+        }
       }
 
       function logEvent(type, payload) {

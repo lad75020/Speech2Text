@@ -5,7 +5,7 @@ Minimal Node.js transcription service that exposes:
 - a WebSocket API for streaming transcript updates
 - a stateless HTTP MCP endpoint for agent tool calls returning only the final transcript
 
-Both transports accept `webm/opus` audio as base64, convert it to mono 16 kHz WAV with `ffmpeg`, and run `whisper-cli`.
+Both transports accept base64 audio in any format `ffmpeg` can read, convert it to mono 16 kHz WAV, and run `whisper-cli`.
 
 ## Requirements
 
@@ -58,8 +58,9 @@ tail -f /Users/laurent/Library/Logs/Speech2Text/launchd.stderr.log
 
 ## Browser Test Page
 
-A standalone WebSocket test client is available at `test/websocket-test.html`.
+A standalone WebSocket test client is available at `test/websocket-test.html` and is served by the backend at `/test`.
 
+- Public test URL: `https://whisper.dubertrand.fr/test`
 - Default backend URL: `wss://whisper.dubertrand.fr`
 - Open it from a secure origin such as `https://...` or `http://localhost/...` so the browser allows microphone access.
 
@@ -74,11 +75,11 @@ Send JSON:
   "type": "transcribe",
   "id": "optional-request-id",
   "language": "auto",
-  "audio": "BASE64_WEBM_OPUS"
+  "audio": "BASE64_AUDIO"
 }
 ```
 
-The `audio` field may also be a data URL such as `data:audio/webm;base64,...`.
+The `audio` field may also be a data URL such as `data:audio/webm;base64,...`, `data:audio/mpeg;base64,...`, or another `ffmpeg`-readable audio MIME type.
 
 Server responses:
 
@@ -105,11 +106,11 @@ Tool input schema:
   "type": "transcribe",
   "id": "optional-request-id",
   "language": "auto",
-  "audio": "BASE64_WEBM_OPUS"
+  "audio": "BASE64_AUDIO"
 }
 ```
 
-The `audio` field may also be a data URL such as `data:audio/webm;base64,...`.
+The `audio` field may also be a data URL such as `data:audio/webm;base64,...`, `data:audio/mpeg;base64,...`, or another `ffmpeg`-readable audio MIME type.
 
 Tool result:
 
