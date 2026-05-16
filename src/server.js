@@ -127,6 +127,14 @@ httpServer.listen(PORT, HOST, () => {
 
 async function handleHttpRequest(req, res) {
   try {
+    setCorsHeaders(res);
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     const requestUrl = new URL(req.url ?? "/", `https://${req.headers.host ?? "localhost"}`);
 
     if (requestUrl.pathname === "/healthz") {
@@ -292,6 +300,16 @@ async function readJsonBody(req) {
 function sendJsonResponse(res, statusCode, payload) {
   res.writeHead(statusCode, { "content-type": "application/json" });
   res.end(JSON.stringify(payload));
+}
+
+function setCorsHeaders(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Mcp-Session-Id, MCP-Protocol-Version"
+  );
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 }
 
 function createTranscriptionJob({
